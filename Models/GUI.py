@@ -1,5 +1,5 @@
-from distutils.cmd import Command
-import tkinter
+#from distutils.cmd import Command
+#import tkinter
 import customtkinter
 from sys import exit
 import os
@@ -36,7 +36,6 @@ LOAD_GEOMETRY = [640 , 162*4]                                                   
 #########################################################################################
 NEW_TITLE = "New Project"
 NEW_GEOMETRY = [690 , 640]                                                                # Window [width, height] in px 
-
 
 class New_Mission(customtkinter.CTkToplevel):
     def __init__(self, *args, **kwargs):
@@ -85,13 +84,15 @@ class New_Mission(customtkinter.CTkToplevel):
         # Number of states
         self.stateLabel = customtkinter.CTkLabel(self.iframe, text="Number of States")
         self.stateLabel.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")
-        self.stateEntry = customtkinter.CTkEntry(self.iframe, placeholder_text="4")
-        self.stateEntry.grid(row=1, column=1, padx=20, pady=20, sticky="ew")
+        self.stateCombo = customtkinter.CTkComboBox(self.iframe, values=['3', '4'])
+        self.stateCombo.set('4')
+        self.stateCombo.grid(row=1, column=1, padx=20, pady=20, sticky="ew")
         # Number of decoys
         self.decoyLabel = customtkinter.CTkLabel(self.iframe, text="Number of Decoys")
         self.decoyLabel.grid(row=1, column=2, padx=20, pady=20, sticky="nsew")
-        self.decoyEntry = customtkinter.CTkEntry(self.iframe, placeholder_text="2")
-        self.decoyEntry.grid(row=1, column=3, padx=20, pady=20, sticky="ew")
+        self.decoyCombo = customtkinter.CTkComboBox(self.iframe, values=['1', '2'])
+        self.decoyCombo.set('2')
+        self.decoyCombo.grid(row=1, column=3, padx=20, pady=20, sticky="ew")
 
         # Physical System Parameters
         self.phy_param_label = customtkinter.CTkLabel(self.iframe, text="Physical System Parameters",
@@ -207,7 +208,7 @@ class New_Mission(customtkinter.CTkToplevel):
         self.srate_Entry = customtkinter.CTkEntry(self.iiiframe, placeholder_text="MHz")
         self.srate_Entry.grid(row=3, column=3, padx=20, pady=20, sticky="ew")
 
-    def option_callback(self,choice):
+    def option_callback(self):
         print(self.mu1_Combo.get())
         if self.mu1_Combo.get() == "Variable":
             self.mu1_Range.grid(row=0, column=3, padx=20, pady=20, sticky="ew")
@@ -231,7 +232,7 @@ class New_Mission(customtkinter.CTkToplevel):
             self.pk2_Range.grid_forget()
 
     def Verify_decoy(self):
-        if int(self.decoyEntry.get()) > 1:
+        if int(self.decoyCombo.get()) == 2:
             self.pk2_Fill_Label.grid_forget()
 
             self.mu3_Label.grid(row=2, column=0, padx=20, pady=20, sticky="nsew")
@@ -244,15 +245,6 @@ class New_Mission(customtkinter.CTkToplevel):
 
             self.pk3_Fill_Label.grid(row=5, column=0, columnspan=2, padx=20, pady=20, sticky="nsew")
         else:
-            self.mu3_Label.grid_forget()
-            self.mu3_Entry.grid_forget()
-            self.mu3_Combo.grid_forget()
-            self.pk2_Label.grid_forget()
-            self.pk2_Entry.grid_forget()
-            self.pk2_Combo.grid_forget()
-            self.pk3_Fill_Label_1.grid_forget()
-            self.pk3_Fill_Label_2.grid_forget()
-
             self.pk2_Fill_Label.grid(row=4, column=0, columnspan=2, padx=20, pady=20, sticky="nsew")
             
     def select_frame_by_name(self, name):
@@ -314,7 +306,8 @@ class Load_Mission(customtkinter.CTkToplevel):
         self.logo_image = customtkinter.CTkImage(Image.open(image_path + "//Logo.png"), size=(26, 26))
 
         # Load Folders
-        path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "Saves")
+        cd = os.path.dirname(os.path.realpath(__file__))
+        path = os.path.join(os.path.dirname(cd), "saves")
         folders = [f for f in os.listdir(path) if os.path.isdir(os.path.join(path, f))]
 
         # create navigation frame

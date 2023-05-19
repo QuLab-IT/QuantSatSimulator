@@ -1,6 +1,6 @@
 import numpy as np
-import Security as sc
-import OptSet as opts
+from models import Security as sc
+from models import OptSet as opts
 import os
 import warnings
 from tqdm import tqdm
