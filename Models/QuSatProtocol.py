@@ -401,8 +401,11 @@ def writeDataCSV(data,outpath,outfile,out_head=None):
             print('Warning: No. of fields does not match number of headings in', 
                   'output file:',outfile+'.csv')
             print('No. fields =',data.shape[1],', No. headings =',nhead)
+    if not os.path.exists(outpath):
+        os.makedirs(outpath) 
+        
     filename = os.path.join(outpath, outfile + '.csv')
-    np.savetxt(filename,data,delimiter=',',header=out_head) 
+    np.savetxt(filename,data,delimiter=',',header=out_head)  
     return None
 
 def Opt_Param_find(eff,delta,protocol,AdvParam):
