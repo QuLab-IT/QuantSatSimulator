@@ -168,6 +168,19 @@ class protocol():
         nX = np.sum(nx_mu)
         # Total number of events in the sifted Z basis
         nZ = np.sum(nz_mu)
+
+        if self.states == 3:
+            # Number of Cross-basis XZ detection events for each time slot and intensity
+            # Returns the (3,) array nxz_j
+            nxz_mu = n_j(PAx, 1-PBx, self.params.get('srate'), self.dt, P_times_Dj)
+            # Number of Cross-basis ZX detection events for each time slot and intensity
+            # Returns the (3,) array nzx_j
+            nzx_mu = n_j(1-PAx, PBx, self.params.get('srate'), self.dt, P_times_Dj)
+            # Total number of Cross-basis XZ detection events
+            nXZ = np.sum(nxz_mu)
+            # Total number of Cross-basis ZX detection events
+            nZX = np.sum(nzx_mu)
+
         
         # Total number of errors in the sifted X and Z basis
         # Returns the (1,) array mX
@@ -292,7 +305,7 @@ class protocol():
         ratio = min(vz1 / sz1, 1 - ZERO)
         # The quantum bit error rate in the sifted X basis
         if self.states == 3:
-            QBERx = QBERsimple()
+            QBERx = QBERsimple(PAx,PBx,nX,nZ,mZ,nXZ,nZX)
         elif self.states == 4:
             if nX == 0:
                 QBERx = 0
@@ -383,6 +396,47 @@ class protocol():
             print("Error! Unexpected key length:", l)
             #return l        # Negative key length, NaN? --Useful for troubleshooting
             return INF  # ~1/0 --Stops calculations grinding to a halt
+
+    def key_length_min(self,var):
+        """
+        Returns the simetric of the secure key length for an asymmetric BB84 
+        protocol with weak coherent pulses.
+
+        Parameters
+        ----------
+        var : float, array/tuple
+            var[0] = Asymmetric basis choice probability - Pax
+            var[1] = Asymmetric basis choice probability - Pbx
+            var[2] = Weak coherent pulse 1 probability - pk_1
+            var[3] = Weak coherent pulse 2 probability - pk_2
+            var[4] = Weak coherent pulse 1 intensity - mu_1
+            var[5] = Weak coherent pulse 2 intensity - mu_2
+
+        Returns
+        -------
+        -l : float
+            minus secure key length (in bits).
+
+        """
+        # Calculate the secure key length (normalised by NoPass)
+        l, _, _, _, _, _, _, _, _, _, _, _, _, _ = self.key_length(var)
+
+        # Safety check that all parameters are positive
+        if (np.any(var[var < 0])):
+            return INF  # ~1/0
+        # Safety check that the parameters satisfy the constraints
+        C = bool_constraints(self.decoys,var[0],var[1],var[2],var[3],var[4],var[5],MU3)
+        if (not np.all(C)):
+            return INF  # ~1/0
+
+        if (l >= 0):
+            return -l  # Inverse key length
+        else:
+            #return num_max  # ~1/0
+            print("Error! Unexpected key length:", l)
+            #return l        # Negative key length, NaN? --Useful for troubleshooting
+            return INF  # ~1/0 --Stops calculations grinding to a halt
+
 
 ###########################################################################
 ## System Parameter Dependence Functions
@@ -872,8 +926,11 @@ def mean_photon_a(P,mu):
     """
     return np.dot(P, mu)
 
-def QBERsimple():
-    return 0
+def QBERsimple(PA,PB,nX,nZ,mZ,nXZ,nZX):
+    paz = 1-PA
+    pbz = 1-PB
+    cb = mZ/(paz*pbz) - nXZ/(PA*pbz) - nZX/(paz*PB) + 2*nZ/(PA*pbz)
+    return min(0.5*(PA*PB/nX)*( mZ/(paz*pbz) + max(0, cb) ),1)
 
 def logM(nX, QBERx, eps_c):
     """

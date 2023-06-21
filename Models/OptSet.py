@@ -122,12 +122,12 @@ class bounds():
         cons_type = 'ineq' # C_j[x] >= 0
         if decoys == 1:
             lin_cons = {'type' : cons_type,
-                            'fun'  : cons_1D,
-                            'jac'  : cons_1D_jac}
+                        'fun'  : cons_1D,
+                        'jac'  : cons_1D_jac}
         elif decoys == 2:
             lin_cons = {'type' : cons_type,
-                            'fun'  : cons_2D,
-                            'jac'  : cons_2D_jac}
+                        'fun'  : cons_2D,
+                        'jac'  : cons_2D_jac}
         # method='COBYLA'
         if self.method.name == 'COBYLA':
             b = [(lb[i],ub[i]) for i in range(len(lb))]

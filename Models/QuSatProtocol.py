@@ -1,4 +1,6 @@
 import numpy as np
+import math
+from scipy.special import gammainc
 from models import Security as sc
 from models import OptSet as opts
 import os
@@ -408,7 +410,7 @@ def writeDataCSV(data,outpath,outfile,out_head=None):
     np.savetxt(filename,data,delimiter=',',header=out_head)  
     return None
 
-def Opt_Param_find(eff,delta,protocol,AdvParam):
+def Opt_Param_find(eff,delta,protocol,x0_i,AdvParam):
 
     decoys = protocol.decoys
 
@@ -430,8 +432,454 @@ def Opt_Param_find(eff,delta,protocol,AdvParam):
     tStopBetter = O.method.param['tStopBetter']
     tStopZero = O.method.param['tStopZero']
     # Store initial/fixed protocol parameters as an array
-    x0 = x0_rand(O.lowerb(),O.upperb(),ZERO,decoys)
+    x0 = x0_i
+    # Initialize Error variable
+    Err = None
+    # Use the optimised parameters from the previous shift angle calculation
+    protocol.System_state(eff,delta)
+    res = minimize(protocol.key_length_min,x0,args=(),method=method,
+                    jac=None,hess=None,hessp=None,bounds=bounds, 
+                    constraints=cons,tol=None,callback=None, 
+                    options=options)
+    Ntot = res.nfev # Initilaise total No. of function evaluations
+    Nopt = 1        # Number of optimisation calls
+    # Re-run optimization until Nmax function evaluations
+    # have been used. Take a copy of initial results to compare.
+    x0c  = x0
+    SKLc = int(-res.fun)
+    resc = res
+    Nzero = 0 # Number of times we get SKL == 0
+    while Ntot < Nmax or Nopt < NoptMin:
+        Nopt += 1
+        # Randomly assign new initial parameters
+        x0 = x0_rand(O.lowerb(),O.upperb(),ZERO,decoys)
+        # Calculate optimised SKL
+        res = minimize(protocol.key_length_min,x0,args=(),method=method,
+                        jac=None,hess=None,hessp=None,bounds=bounds, 
+                        constraints=cons,tol=None,callback=None, 
+                        options=options)
+        if int(-res.fun) >= 0:
+            if int(-res.fun) > SKLc:
+                if Nopt >= NoptMin and tStopBetter:
+                    break # A better value was found!
+                else:
+                    # Store new set of best parameters
+                    x0c  = x0
+                    resc = res
+                    SKLc = int(-res.fun)
+            else:
+                # Reset to the best parameters
+                x0  = x0c
+                res = resc
+        else:
+            # SKL = 0. Reset to the 'best' parameters,
+            # (may still give SKL = 0).
+            Nzero += 1
+            if Nopt > NoptMin:
+                if Nzero / (Nopt - 1) == 1:
+                    # We get SKL = 0 every time.
+                    if tStopZero:
+                        break
+            x0  = x0c
+            res = resc
+        Ntot += res.nfev
 
+    if not res.success:
+            Err = [res.status, res.message]
+
+    return res.x, Err
+
+def Model_loss(eff, dt, protocol, x0_i, AdvParam, opt=None, Print=None):
+    Total_c = len(eff)
+    fulldata = np.empty((Total_c,18))
+    x0 = x0_i
+    Err = []
+    if opt in ['Fixed','fixed']:
+        i = 0
+        while eff[i] > 0.95: i+=1
+        x0, aux = Opt_Param_find(eff[i],dt[i],protocol,x0,AdvParam)
+        if aux is not None:
+            Err += [["Optimiser status = {}: {}".format(aux[0], aux[1]),1]]
+    
+    x0c = []
+    for i in tqdm(range(Total_c),ncols=BAR_SIZE,disable=not Print):
+        if opt in ['Var','var']:
+            x0,aux = Opt_Param_find(eff[i],dt[i],protocol,x0,AdvParam)
+            if aux is not None:
+                aux = "Optimiser status = {}: {}".format(aux[0], aux[1])
+                if aux in [entry[0] for entry in Err]:
+                    for i in range(len(Err)):
+                        if Err[i][0] == aux:
+                            Err[i][1] += 1
+                else:
+                    Err += [[aux,1]]
+
+        # Use the optimised parameters from the previous shift angle calculation
+        protocol.System_state(eff[i],dt[i])
+        # Get final parameters from standard key length function
+        SKL,QBERx,phi_x,nX,nZ,mX,lambdaEC,sX0,sX1,vz1,sZ1,mpn,Dj,ej = protocol.key_length(x0)
+        
+        x0c += [x0]
+        fulldata[i] = [SKL,QBERx,phi_x,nX,nZ,mX,lambdaEC,sX0,sX1,vz1,sZ1,mpn,Dj[0],Dj[1],
+                        dim_check(Dj,2),ej[0],ej[1],dim_check(ej,2) ]
+    return fulldata , x0c, Err
+
+def Linear_sim(SParam, PParam, AdvParam, A, B, N, dt, Print=None, GUI=None, outfile=OUTFILE, opt=None):
+    if par_check(SParam,PParam,AdvParam,Print=Print) == -1: return
+
+    states = SParam['states']
+    decoys = SParam['decoys']
+    P = sc.protocol(states,decoys,PParam)
+    P.bound_method(AdvParam['boundM'])
+    P.error_func(AdvParam['ECfunc'])
+
+    loss_dB = np.linspace(A,B,N)
+    eff = 10**( -loss_dB*0.1)
+
+    #******************************************************************************
+    # Initialise loop ranges
+    #******************************************************************************
+    Total_c = len(eff)
+    #******************************************************************************
+    # Initialise delta time array
+    #******************************************************************************
+    delta = [dt for i in range(len(eff))]
+    #******************************************************************************
+    # Initialise calculation parameters
+    #******************************************************************************
+    # Store initial/fixed protocol parameters as an array
+    order = ['pax', 'pbx', 'pk1', 'pk2', 'mu1', 'mu2']
+    x0 = [PParam[i] for i in order]
+    #******************************************************************************
+    # Initialise output data storage and headers
+    #******************************************************************************
+    # Header for CSV file: Data columns
+    header = "SysLoss [dB],DiffLoss,AtmLoss,IntrLoss,time,dt,elev,SKL,QBERx,phiX,nX, \
+              nZ,mX,lambdaEC,sX0,sX1,vZ1,sZ1,mean photon no.,D1,D2,D3,e1,e2,e3,QBERI, \
+              Pec,Pap,Rrate,eps_c,eps_s,PAx,PBx,P1,P2,P3,mu1,mu2,mu3"
+    # Initialise a data storage array: shape(No. of data runs, No. of metrics)   
+    fulldata = np.empty((len(eff),len(header.split(","))))
+
+    if GUI is not None:
+        return
+    elif Print is not None:
+        print('_'*60,'\n')
+        print('-'*60)
+        print('QuSatProtocol v1.0')
+        print('-'*60)
+        print('Linear Simulation of Efficient BB84 security protocol')
+        print('For {} States and {} Decoys'.format(P.states,P.decoys))
+        if opt is not None:
+            print('Using Variable protocol parameters: Px, pk, mu')
+        else:
+            print('Using Fixed protocol parameters: Px, pk, mu')
+        print('Using {} bounds for statistical fluctuations'.format(P.boundM))
+        if P.ECfunc in ['logM','logm']:
+            print('Error correction model: logM(nX, QBERx, eps_c)')
+        elif P.ECfunc in ['Block','block']:
+            print('Error correction model: 1.16 * nX * h(QBERx)')
+        elif P.ECfunc in ['mXtot','mxtot']:
+            print('Error correction model: 1.16 * mXtot')
+        elif P.ECfunc in ['None','none']:
+            print('Error correction term not included')
+        print('-'*60)
+        print('_'*60,'\n')
+
+    tc00 = perf_counter()       # Start clock timer
+    Model,pp,Err = Model_loss(eff,delta,P,x0,AdvParam,opt=opt,Print=Print)
+    for l in range(Total_c):
+        data = np.concatenate((np.array([loss_dB[l],-1,-1,-1,-1,delta[l],-1]),np.array(Model[l])))
+        data = np.concatenate((data,np.array([PParam['QBERI'],PParam['pec'],PParam['pap'],
+                               PParam['srate'],PParam['eps_c'],PParam['eps_s'],pp[l][0],pp[l][1],pp[l][2],pp[l][3],
+                               1-pp[l][2]-pp[l][3],pp[l][4],pp[l][5],MU3])))
+        fulldata[l] = data
+
+    #******************************************************************************
+    #******************************************************************************
+    # Sort and output data
+    #******************************************************************************
+    #******************************************************************************
+    # Write out full data in CSV format
+    writeDataCSV(fulldata,os.path.join(DDATA,'RawData'),outfile,header)
+    #******************************************************************************
+    # Print the calculation timings
+    #******************************************************************************
+    tc11 = perf_counter() # Stop clock timer
+    tc   = tc11-tc00      # Calculation duration from clock
+    if GUI is not None:
+        return
+    elif Print is not None:
+        print('')
+        if len(Err) > 0:
+            print('Error Messages:')
+            for entry in Err:
+                print('({}) > '.format(entry[1]) + entry[0])
+        print('')
+        print('Final clock timer (s): ' + format_time(tc))
+        print('All done!')
+    return
+    
+def Simulator(SParam, PParam, AdvParam, Print=None, GUI=None, outfile=OUTFILE, opt=None):
+    
+    if par_check(SParam,PParam,AdvParam,Print=Print) == -1: return
+
+    pass_data = loadData(os.path.join(DDATA,'Micius Data'), "Micius.txt", usecols=(0,1,2))
+    time = pass_data[:,0]
+    elevation = pass_data[:,1]
+    if load_check(time,elevation,Print=Print) == -1: return
+    
+    states = SParam['states']
+    decoys = SParam['decoys']
+    P = sc.protocol(states,decoys,PParam)
+    P.bound_method(AdvParam['boundM'])
+    P.error_func(AdvParam['ECfunc'])
+
+    h         = SParam['h']
+    dtrans    = SParam['dt']
+    dreceiv   = SParam['dr']
+    w         = SParam['w']
+    wl        = SParam['wl']
+
+    # Losses
+    dif  = diffraction(elevation, h, dtrans, dreceiv, w, wl)
+    atm  = atmospheric(elevation, pass_data[:,2])
+    intr = np.full(len(elevation), AdvParam['intr'])
+    loss_dB = dif + atm + intr - 16
+    eff = 10**( -loss_dB*0.1)
+    #******************************************************************************
+    # Initialise loop ranges
+    #******************************************************************************
+    Total_c = len(eff)
+    #******************************************************************************
+    # Initialise delta time array
+    #******************************************************************************
+    delta = [np.abs(time[i]-time[i-1]) if i >= Total_c-1 else np.abs(time[i+1]-time[i])
+             for i in range(len(time))]
+    #******************************************************************************
+    # Initialise Model Vectors
+    #******************************************************************************
+    eff_aux, delta_aux = cres_sort(eff,delta)
+    TotalI = len(eff_aux)
+    #******************************************************************************
+    # Initialise calculation parameters
+    #******************************************************************************
+    # Store initial/fixed protocol parameters as an array
+    order = ['pax', 'pbx', 'pk1', 'pk2', 'mu1', 'mu2']
+    x0 = [PParam[i] for i in order]
+    #******************************************************************************
+    # Initialise output data storage and headers
+    #******************************************************************************
+    # Header for CSV file: Data columns
+    header = "SysLoss [dB],DiffLoss,AtmLoss,IntrLoss,time,dt,elev,SKL,QBERx,phiX,nX,nZ,mX,lambdaEC,sX0,sX1,vZ1,sZ1," + \
+             "mean photon no.,D1,D2,D3,e1,e2,e3,QBERI,Pec,Pap,Rrate,eps_c,eps_s," + \
+             "PAx,PBx,P1,P2,P3,mu1,mu2,mu3"
+    # Initialise a data storage array: shape(No. of data runs, No. of metrics)   
+    fulldata = np.empty((len(eff),len(header.split(","))))
+    #******************************************************************************
+    # Print the presentation Header
+    #******************************************************************************
+    if GUI is not None:
+        return
+    elif Print is not None:
+        print('_'*60,'\n')
+        print('-'*60)
+        print('QuSatProtocol v1.0')
+        print('-'*60)
+        print('Simulation of Efficient BB84 security protocol')
+        print('For {} States and {} Decoys'.format(P.states,P.decoys))
+        if opt is not None:
+            print('Using Variable protocol parameters: Px, pk, mu')
+        else:
+            print('Using Fixed protocol parameters: Px, pk, mu')
+        print('Using {} bounds for statistical fluctuations'.format(P.boundM))
+        if P.ECfunc in ['logM','logm']:
+            print('Error correction model: logM(nX, QBERx, eps_c)')
+        elif P.ECfunc in ['Block','block']:
+            print('Error correction model: 1.16 * nX * h(QBERx)')
+        elif P.ECfunc in ['mXtot','mxtot']:
+            print('Error correction model: 1.16 * mXtot')
+        elif P.ECfunc in ['None','none']:
+            print('Error correction term not included')
+        print('-'*60)
+        print('Total Number of iterations: {}'.format(TotalI))
+        print('-'*60)
+        print('_'*60,'\n')
+
+    tc00 = perf_counter()       # Start clock timer
+    Model,pp,Err = Model_loss(eff_aux,delta_aux,P,x0,AdvParam,opt=opt,Print=Print)
+
+    for l in range(Total_c):
+        i = np.where(eff_aux == eff[l])[0][0]
+        data = np.concatenate((np.array([loss_dB[l],dif[l],atm[l],intr[l],time[l],delta[l],
+                               elevation[l]]),np.array(Model[i])))
+        data = np.concatenate((data,np.array([PParam['QBERI'],PParam['pec'],PParam['pap'],
+                               PParam['srate'],PParam['eps_c'],PParam['eps_s'],pp[i][0],pp[i][1],pp[i][2],pp[i][3],
+                               1-pp[i][2]-pp[i][3],pp[i][4],pp[i][5],MU3])))
+        fulldata[l] = data
+
+    #******************************************************************************
+    #******************************************************************************
+    # Sort and output data
+    #******************************************************************************
+    #******************************************************************************
+    # Write out full data in CSV format
+    writeDataCSV(fulldata,os.path.join(DDATA,'RawData'),outfile,header)
+    #******************************************************************************
+    # Print the calculation timings
+    #******************************************************************************
+    tc11 = perf_counter() # Stop clock timer
+    tc   = tc11-tc00      # Calculation duration from clock
+    if GUI is not None:
+        return
+    elif Print is not None:
+        print('')
+        if len(Err) > 0:
+            print('Error Messages:')
+            for entry in Err:
+                print('({}) > '.format(entry[1]) + entry[0])
+        print('')
+        print('Final clock timer (s): ' + format_time(tc))
+        print('All done!')
+    return
+
+def diffraction(elevation, altitude, dtransmitter, dreceiver, beamwaist, wavelenght):
+    d = 0.5 * ( 2*RT*np.cos(elevation + np.pi/2) + np.sqrt( 4*altitude**2 + 8*altitude*RT + (2*RT*np.cos(elevation + np.pi/2))**2 ) )
+    pc = 2.44*wavelenght/dtransmitter
+    div = wavelenght/(np.pi*beamwaist)
+    m = 1-np.abs(pc-div)/pc
+
+    return -20*np.log10( dreceiver*dtransmitter / ( dtransmitter**2 + 2.44*m*d*wavelenght ) )
+
+def atmospheric(elev,eff):
+    dif = diffraction(elev,M_H,M_DT,M_DR,M_W,M_WL)
+        
+    return -10*np.log10(eff) - dif - M_INT
+
+
+def x0_rand(lb,ub,num_min,decoys):
+    """
+    Randomly initialise the 7 protocol parameters using the specified bounds.
+    Parameters and bounds should be specified in the order {Px,pk1,pk2,mu1,mu2}.
+
+    Parameters
+    ----------
+    xb : float, array-like
+        Upper and lower bounds for the protocol parameters. (5,2)
+    num_min : float
+        An arbitrarily small number.
+
+    Returns
+    -------
+    x0 : float, array
+        Randomly initialised protocol parameters.
+
+    """
+    # Pax_i  = np.random.rand() * (ub[0] - lb[0] - 2*num_min) + lb[0] + num_min
+    # Pbx_i  = np.random.rand() * (ub[1] - lb[1] - 2*num_min) + lb[1] + num_min
+    Pax_i  = np.random.uniform(lb[0],ub[0])
+    Pbx_i  = np.random.uniform(lb[1],ub[1])
+    if decoys == 1:
+        # pk1_i = np.random.rand() * (ub[2] - lb[2] - 2*num_min) + lb[2] + num_min
+        pk1_i = np.random.uniform(lb[2],ub[2])
+        pk2_i = 1-pk1_i
+    elif decoys == 2:
+        pk1_i, pk2_i = 1.0, 1.0
+        while (pk1_i+pk2_i >= 1.0):
+            pk1_i = np.random.rand() * (ub[2] - lb[2] - 2*num_min) + lb[2] + num_min
+            pk2_i = np.random.rand() * (min(ub[3],1-pk1_i) - lb[3] - 2*num_min) + lb[3] + num_min
+    #mu3_i = np.random.rand() * (ub[6] - lb[6] - 2*num_min) + lb[6] + num_min
+    mu3_i = MU3
+    mu1_i = np.random.rand() * (ub[4] - max(lb[4],2*mu3_i) - 2*num_min) + max(lb[4],2*mu3_i) + num_min
+    mu2_i = np.random.rand() * (min(ub[5],mu1_i) - max(lb[5],mu3_i) - 2*num_min) + max(lb[5],mu3_i) + num_min
+    return np.array([Pax_i,Pbx_i,pk1_i,pk2_i,mu1_i,mu2_i])
+
+def cres_sort(Array1,Array2):
+    zipp = zip(Array1,Array2)
+    Arr = list(sorted(zipp, key=lambda x: x[0]))
+    inds = []
+    for i in range(1,len(Arr)):
+        if Arr[i][0] == Arr[i-1][0]:
+            inds += [i]
+    Filter = [value for index, value in enumerate(Arr) if index not in inds]
+    Ar1, Ar2 = zip(*Filter)
+    return np.array(Ar1) , np.array(Ar2)
+
+def format_time(s):
+    ms = int(s*1000)
+    min, ms = divmod(ms,60000)
+    sec, ms = divmod(ms,1000)
+    return "{:02d}:{:02d}:{:03d}".format(min,sec,ms)
+
+def ratio_check(value):
+    if isinstance(value,float):
+        if (value > 1.0 or value < 0.0):
+            return False
+    else:
+        return False
+    return True
+
+def dim_check(arr,index):
+    if index > len(arr)-1:
+        return -1
+    else:
+        return arr[index]
+
+def par_check(SParam, PParam, AdvParam, Print=None):
+    if None in [SParam, PParam, AdvParam]:
+        if Print is not None:
+            print("Error: Some parameters are not defined:")
+            print('System Parameters:')
+            for p in SParam.items():
+                print(' '*2 + '> ' + p[0] + ': ' + str(p[1]),end="")
+                if p[1] is None:
+                    print(' (!)')
+                else:
+                    print('\n')
+        return -1
+    return 1
+
+def load_check(time,elev,Print=None):
+    if np.nan in time or np.nan in elev:
+        if Print is not None:
+            print('Error: Some Values loaded from file are undefined')
+        return -1
+    
+    elev_check = [1 if e>=0 or e<= 90 else -1 for e in elev]
+    if -1 in elev_check:
+        if Print is not None:
+            print('Error: Elevation value is not bounded')
+        return -1
+
+    return 1
+
+
+""" 
+
+def Opt_Param_find(eff,delta,protocol,x0_i,AdvParam):
+
+    decoys = protocol.decoys
+
+    #******************************************************************************
+    # Initialise calculation parameters
+    #******************************************************************************
+    # Store optimisation parameters
+    method = AdvParam['optM']
+    optparam = opts.opt_method(method)
+    for item in list(AdvParam['optP'].items()):
+        optparam.edit(item[0],item[1])
+    O = opts.bounds(optparam)
+    order = ['pax', 'pbx', 'pk1', 'pk2', 'mu1', 'mu2']
+    for n in order:
+        O.add_var(AdvParam['R_'+n],n)
+    bounds,cons,options = O.opt_param(decoys)
+    Nmax = O.method.param['Nmax']
+    NoptMin = O.method.param['NoptMin']
+    tStopBetter = O.method.param['tStopBetter']
+    tStopZero = O.method.param['tStopZero']
+    # Store initial/fixed protocol parameters as an array
+    x0 = x0_i
+    # Initialize Error variable
+    Err = None
     # Use the optimised parameters from the previous shift angle calculation
     protocol.System_state(eff,delta)
     res = minimize(protocol.key_length_inv,x0,args=(),method=method,
@@ -457,7 +905,7 @@ def Opt_Param_find(eff,delta,protocol,AdvParam):
                         options=options)
         if int(1.0 / res.fun) > 0:
             if int(1.0 / res.fun) > SKLc:
-                if Nopt >= NoptMin and tStopBetter:
+                if Nopt >= NoptMin or tStopBetter:
                     break # A better value was found!
                 else:
                     # Store new set of best parameters
@@ -481,140 +929,42 @@ def Opt_Param_find(eff,delta,protocol,AdvParam):
             res = resc
         Ntot += res.nfev
 
-    return res.x
+    if not res.success:
+            Err = [res.status, res.message]
 
-def Fixed_Sim(SParam, PParam, AdvParam, Print=None, GUI=None, outfile=OUTFILE, opt=None):
-    if None in [SParam, PParam, AdvParam]:
-        if Print is not None:
-            print("Error: Some parameters are not defined:")
-            print('System Parameters:')
-            for p in SParam.items():
-                print(' '*2 + '> ' + p[0] + ': ' + str(p[1]),end="")
-                if p[1] is None:
-                    print(' (!)')
-                else:
-                    print('\n')
-        return
+    return res.x, Err
 
-    pass_data = loadData(os.path.join(DDATA,'Micius Data'), "Micius.txt", usecols=(0,1,2))
-    time = pass_data[:,0]
-    elevation = pass_data[:,1]
 
-    states = SParam['states']
-    decoys = SParam['decoys']
-    P = sc.protocol(states,decoys,PParam)
-    P.bound_method(AdvParam['boundM'])
-    P.error_func(AdvParam['ECfunc'])
+def diffraction(elevation, altitude, dreceiver, beamwaist, point_e, wavelenght):
+    d = 0.5 * ( 2*RT*np.cos(elevation + np.pi/2) + np.sqrt( 4*altitude**2 + 8*altitude*RT + (2*RT*np.cos(elevation + np.pi/2))**2 ) )
+    w = beamwaist + 2*wavelenght/(np.pi*beamwaist) * d
+    G_loss = []
+    P_loss = []
+    for i in range(len(w)):
+        G_loss += [Power_point(d[i],0,w[i]/2,dreceiver/2)]
+        P_loss += [Power_point(d[i],point_e,w[i]/2,dreceiver/2) - G_loss[-1]]
 
-    h         = SParam['h']
-    dtrans    = SParam['dt']
-    dreceiv   = SParam['dr']
-    w         = SParam['w']
-    wl        = SParam['wl']
+    return np.array(G_loss), np.array(P_loss)
 
-    # Losses
-    dif  = diffraction(elevation, h, dtrans, dreceiv, w, wl)
-    atm  = atmospheric(elevation, pass_data[:,2])
-    intr = np.full(len(elevation), AdvParam['intr'])
-    loss_dB = dif + atm + intr - 16
-    eff = 10**( -loss_dB*0.1)
+def Power_point(h, point_err, w, a):
+    d = h*point_err
+    result = 0
+    k = 0
+    while True:
+        term = (2**k * d **(2 * k)) / (w **(2 * k) * math.factorial(k)** 2) * gammainc(k + 1, (2 * a**2) / w**2)
+        result += term
+        if abs(term) < 1e-8:  # Change the tolerance as needed
+            break
+        k += 1
+    result = math.exp(-((2 * d**2) / w**2)) * result
+    return -10*math.log(result,10)
 
-    #******************************************************************************
-    # Initialise loop ranges
-    #******************************************************************************
-    Total_c = len(eff)
-    #******************************************************************************
-    # Initialise calculation parameters
-    #******************************************************************************
-    # Store initial/fixed protocol parameters as an array
-    order = ['pax', 'pbx', 'pk1', 'pk2', 'mu1', 'mu2', 'mu3']
-    if opt is not None:
-        i = np.argmin(eff)
-        x0 = Opt_Param_find(eff[i],np.abs(time[i]-time[i-1]),P,AdvParam)
-    else:
-        x0 = np.array([PParam[i] for i in order])
-    #******************************************************************************
-    # Initialise output data storage and headers
-    #******************************************************************************
-    # Header for CSV file: Data columns
-    header = "SysLoss [dB],DiffLoss,AtmLoss,IntrLoss,time,dt,elev,SKL,QBERx,phiX,nX,nZ,mX,lambdaEC,sX0,sX1,vZ1,sZ1," + \
-             "mean photon no.,D1,D2,D3,e1,e2,e3,QBERI,Pec,Pap,Rrate,eps_c,eps_s," + \
-             "PAx,PBx,P1,P2,P3,mu1,mu2,mu3"
-    # Initialise a data storage array: shape(No. of data runs, No. of metrics)   
-    fulldata = np.empty((Total_c,len(header.split(","))))
-
-    if GUI is not None:
-        return
-    elif Print is not None:
-        print('_'*60,'\n')
-        print('-'*60)
-        print('QuSatProtocol v1.0')
-        print('-'*60)
-        print('Efficient BB84 security protocol')
-        print('For {} States and {} Decoys'.format(P.states,P.decoys))
-        print('Using Fixed protocol parameters: Px, pk, mu')
-        print('Using {} bounds for statistical fluctuations'.format(P.boundM))
-        if P.ECfunc in ['logM','logm']:
-            print('Error correction model: logM(nX, QBERx, eps_c)')
-        elif P.ECfunc in ['Block','block']:
-            print('Error correction model: 1.16 * nX * h(QBERx)')
-        elif P.ECfunc in ['mXtot','mxtot']:
-            print('Error correction model: 1.16 * mXtot')
-        elif P.ECfunc in ['None','none']:
-            print('Error correction term not included')
-        print('-'*60)
-        print('_'*60,'\n')
-
-    tc00 = perf_counter()       # Start clock timer
-    tc = 0
-    count = 0                   # Initialise calculation counter
-    for i in tqdm(range(Total_c),ncols=BAR_SIZE,disable=not Print):
-
-        if GUI is not None:
-            return
+def atmospheric(elev,eff):
+    geo,point = diffraction(elev,M_H,M_DR,M_W,0.6*10**-6,M_WL)
+    diff = geo + point
         
-        if i >= len(eff)-1 :
-            delta = np.abs(time[i]-time[i-1])
-        else:
-            delta = np.abs(time[i+1]-time[i])
-        
-        # Use the optimised parameters from the previous shift angle calculation
-        P.System_state(eff[count],delta)
-        # Get final parameters from standard key length function
-        SKL,QBERx,phi_x,nX,nZ,mX,lambdaEC,sX0,sX1,vz1,sZ1,mpn,Dj,ej = P.key_length(x0)
-        # Store calculation parameters
-        fulldata[count] = [loss_dB[count],dif[count],atm[count],intr[count],
-                           time[count],delta,elevation[count],SKL,QBERx,phi_x,nX,nZ,mX,lambdaEC,sX0,sX1,
-                           vz1,sZ1,mpn,Dj[0],Dj[1],dim_check(Dj,2),ej[0],ej[1],dim_check(ej,2),
-                           PParam['QBERI'],PParam['pec'],PParam['pap'],
-                           PParam['srate'],PParam['eps_c'],PParam['eps_s'],x0[0],
-                           x0[1],x0[2],x0[3],1-x0[2]-x0[3],x0[4],
-                           x0[5],MU3]
-        #******************************************************************************
-        # Calculation timings
-        #******************************************************************************
-        count += 1           # Increment calculation counter
-    
-    #******************************************************************************
-    #******************************************************************************
-    # Sort and output data
-    #******************************************************************************
-    #******************************************************************************
-    # Write out full data in CSV format
-    writeDataCSV(fulldata,os.path.join(DDATA,'RawData'),outfile,header)
-    #******************************************************************************
-    # Print the calculation timings
-    #******************************************************************************
-    tc11 = perf_counter() # Stop clock timer
-    tc   = tc11-tc00      # Calculation duration from clock
-    if GUI is not None:
-        return
-    elif Print is not None:
-        print('')
-        print('Final clock timer (s): ' + format_time(tc))
-        print('All done!')
-    return
-
+    return -10*np.log10(eff) - diff - M_INT, diff, -10*np.log10(eff)
+ 
 def Pass_Sim(SParam, PParam, AdvParam, Print=False, GUI=None, outfile=OUTFILE):
 
     if None in [SParam, PParam, AdvParam]:
@@ -649,7 +999,7 @@ def Pass_Sim(SParam, PParam, AdvParam, Print=False, GUI=None, outfile=OUTFILE):
     dif  = diffraction(elevation, h, dtrans, dreceiv, w, wl)
     atm  = atmospheric(elevation, pass_data[:,2])
     intr = np.full(len(elevation), AdvParam['intr'])
-    loss_dB = dif + atm + intr - 16
+    loss_dB = dif + atm + intr - 35
     eff = 10**( -loss_dB*0.1)
 
     #******************************************************************************
@@ -849,73 +1199,4 @@ def Pass_Sim(SParam, PParam, AdvParam, Print=False, GUI=None, outfile=OUTFILE):
         print('Final clock timer (s): ' + format_time(tc))
         print('All done!')
     return
-
-def diffraction(elevation, altitude, dtransmitter, dreceiver, beamwaist, wavelenght):
-    d = 0.5 * ( 2*RT*np.cos(elevation + np.pi/2) + np.sqrt( 4*altitude**2 + 8*altitude*RT + (2*RT*np.cos(elevation + np.pi/2))**2 ) )
-    pc = 2.44*wavelenght/dtransmitter
-    div = wavelenght/(np.pi*beamwaist)
-    m = 1-np.abs(pc-div)/pc
-
-    return -20*np.log10( dreceiver*dtransmitter / ( dtransmitter**2 + 2.44*m*d*wavelenght ) )
-
-def atmospheric(elev,eff):
-    dif = diffraction(elev,M_H,M_DT,M_DR,M_W,M_WL)
-        
-    return -10*np.log10(eff) - dif - M_INT
-
-def x0_rand(lb,ub,num_min,decoys):
-    """
-    Randomly initialise the 7 protocol parameters using the specified bounds.
-    Parameters and bounds should be specified in the order {Px,pk1,pk2,mu1,mu2}.
-
-    Parameters
-    ----------
-    xb : float, array-like
-        Upper and lower bounds for the protocol parameters. (5,2)
-    num_min : float
-        An arbitrarily small number.
-
-    Returns
-    -------
-    x0 : float, array
-        Randomly initialised protocol parameters.
-
-    """
-    # Pax_i  = np.random.rand() * (ub[0] - lb[0] - 2*num_min) + lb[0] + num_min
-    # Pbx_i  = np.random.rand() * (ub[1] - lb[1] - 2*num_min) + lb[1] + num_min
-    Pax_i  = np.random.uniform(lb[0],ub[0])
-    Pbx_i  = np.random.uniform(lb[1],ub[1])
-    if decoys == 1:
-        # pk1_i = np.random.rand() * (ub[2] - lb[2] - 2*num_min) + lb[2] + num_min
-        pk1_i = np.random.uniform(lb[2],ub[2])
-        pk2_i = 1-pk1_i
-    elif decoys == 2:
-        pk1_i, pk2_i = 1.0, 1.0
-        while (pk1_i+pk2_i >= 1.0):
-            pk1_i = np.random.rand() * (ub[2] - lb[2] - 2*num_min) + lb[2] + num_min
-            pk2_i = np.random.rand() * (min(ub[3],1-pk1_i) - lb[3] - 2*num_min) + lb[3] + num_min
-    #mu3_i = np.random.rand() * (ub[6] - lb[6] - 2*num_min) + lb[6] + num_min
-    mu3_i = MU3
-    mu1_i = np.random.rand() * (ub[4] - max(lb[4],2*mu3_i) - 2*num_min) + max(lb[4],2*mu3_i) + num_min
-    mu2_i = np.random.rand() * (min(ub[5],mu1_i) - max(lb[5],mu3_i) - 2*num_min) + max(lb[5],mu3_i) + num_min
-    return np.array([Pax_i,Pbx_i,pk1_i,pk2_i,mu1_i,mu2_i])
-
-def format_time(s):
-    ms = int(s*1000)
-    min, ms = divmod(ms,60000)
-    sec, ms = divmod(ms,1000)
-    return "{:02d}:{:02d}:{:03d}".format(min,sec,ms)
-
-def ratio_check(value):
-    if isinstance(value,float):
-        if (value > 1.0 or value < 0.0):
-            return False
-    else:
-        return False
-    return True
-
-def dim_check(arr,index):
-    if index > len(arr)-1:
-        return -1
-    else:
-        return arr[index]
+   """
