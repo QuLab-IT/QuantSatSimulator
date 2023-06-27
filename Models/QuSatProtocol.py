@@ -441,6 +441,9 @@ def Opt_Param_find(eff,delta,protocol,x0_i,AdvParam):
                     jac=None,hess=None,hessp=None,bounds=bounds, 
                     constraints=cons,tol=None,callback=None, 
                     options=options)
+
+    print_check(0,res)
+
     Ntot = res.nfev # Initilaise total No. of function evaluations
     Nopt = 1        # Number of optimisation calls
     # Re-run optimization until Nmax function evaluations
@@ -458,6 +461,9 @@ def Opt_Param_find(eff,delta,protocol,x0_i,AdvParam):
                         jac=None,hess=None,hessp=None,bounds=bounds, 
                         constraints=cons,tol=None,callback=None, 
                         options=options)
+
+        print_check(Nopt,res)
+
         if int(-res.fun) >= 0:
             if int(-res.fun) > SKLc:
                 if Nopt >= NoptMin and tStopBetter:
@@ -483,7 +489,6 @@ def Opt_Param_find(eff,delta,protocol,x0_i,AdvParam):
             x0  = x0c
             res = resc
         Ntot += res.nfev
-
     if not res.success:
             Err = [res.status, res.message]
 
@@ -496,7 +501,7 @@ def Model_loss(eff, dt, protocol, x0_i, AdvParam, opt=None, Print=None):
     Err = []
     if opt in ['Fixed','fixed']:
         i = 0
-        while eff[i] > 0.95: i+=1
+        while eff[i] > 0.7: i+=1
         x0, aux = Opt_Param_find(eff[i],dt[i],protocol,x0,AdvParam)
         if aux is not None:
             Err += [["Optimiser status = {}: {}".format(aux[0], aux[1]),1]]
@@ -755,7 +760,6 @@ def atmospheric(elev,eff):
         
     return -10*np.log10(eff) - dif - M_INT
 
-
 def x0_rand(lb,ub,num_min,decoys):
     """
     Randomly initialise the 7 protocol parameters using the specified bounds.
@@ -852,6 +856,20 @@ def load_check(time,elev,Print=None):
 
     return 1
 
+def print_check(count,res):
+    print('_'*60,'\n')
+    print('Iteration: ',count)
+    print('Success: {} || {}'.format(res.success,res.message))
+    print('-'*60)
+    print('Parameters:')
+    print(res.x)
+    print('')
+    print("Inequalities:")
+    print("1 - pk1 - pk2 = ", 1-res.x[2]-res.x[3])
+    print("mu1 - mu2 - mu3 - eps = ", res.x[4]-res.x[5]-MU3-ZERO)
+    print("mu2 - mu3 - eps = ", res.x[5]-MU3-ZERO)
+    print('-'*60)
+    return
 
 """ 
 

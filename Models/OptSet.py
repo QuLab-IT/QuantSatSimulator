@@ -131,6 +131,49 @@ class bounds():
         # method='COBYLA'
         if self.method.name == 'COBYLA':
             b = [(lb[i],ub[i]) for i in range(len(lb))]
+
+            def upper_fun(x):
+                # Upper bound inequality function
+                return np.array([ub[0] - x[0],
+                                 ub[1] - x[1],
+                                 ub[2] - x[2],
+                                 ub[3] - x[3],
+                                 ub[4] - x[4],
+                                 ub[5] - x[5]])
+            def upper_jac(x):
+                # Upper bound inequality Jacobian
+                return np.array([[-1,0,0,0,0,0],
+                                 [0,-1,0,0,0,0],
+                                 [0,0,-1,0,0,0],
+                                 [0,0,0,-1,0,0],
+                                 [0,0,0,0,-1,0],
+                                 [0,0,0,0,0,-1]])
+            # Define upper bound inequality dictionary
+            upper = {'type' : cons_type,
+                     'fun'  : upper_fun,
+                     'jac'  : upper_jac}
+            def lower_fun(x):
+                # Lower bound inequlity function
+                return np.array([x[0] - lb[0],
+                                 x[1] - lb[1],
+                                 x[2] - lb[2],
+                                 x[3] - lb[3],
+                                 x[4] - lb[4],
+                                 x[5] - lb[5]])
+            def lower_jac(x):
+                # Lower bound inequality Jacobian
+                return np.array([[1,0,0,0,0,0],
+                                 [0,1,0,0,0,0],
+                                 [0,0,1,0,0,0],
+                                 [0,0,0,1,0,0],
+                                 [0,0,0,0,1,0],
+                                 [0,0,0,0,0,1]])
+            # Define lower bound inequality dictionary
+            lower = {'type' : cons_type,
+                     'fun'  : lower_fun,
+                     'jac'  : lower_jac}
+            # Tuple of all bounds
+            cons = (upper, lower, lin_cons)
             # Set specific optimiser options
             options = {'rhobeg': self.method.param['rhobeg'],
                        'maxiter': self.method.param['Nmax'], 
@@ -138,6 +181,7 @@ class bounds():
                        'catol': self.method.param['ctol']}
         elif self.method.name == 'SLSQP':
             b = Bounds(lb, ub)
+            cons=(lin_cons,)
             # Set specific optimiser options
             options = {'maxiter': self.method.param['Nmax'],
                        'ftol': self.method.param['ftol'],
@@ -145,9 +189,8 @@ class bounds():
                        'disp': False,
                        'eps': self.method.param['eps'],
                        'finite_diff_rel_step': None}
-        return b, lin_cons, options
+        return b, cons, options
 
-            
 def cons_1D(x):
     # Linear constraint inequality function:
     #   (1)         1 - pk1 >= 0,
