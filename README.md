@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # QuantSatSim_v1.0.0
 Modelling for different SatQKD systems based on the SatQuMA v2.0.0 software developed and released by the Space Quantum Technologies team in the Computational Nonlinear & Quantum Optics group in the Department of Physics, University of Strathclyde.
 
