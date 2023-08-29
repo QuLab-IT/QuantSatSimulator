@@ -10,6 +10,7 @@ from channel.time_dependent_loss import get_losses
 #from key.protocols.fourstatetwodecoy.key_4s2d import (set_params, key_length, key_length_inv, key_length_sim)
 #from key.protocols.threestateonedecoy.init_3s1d import (x0_rand, check_constraints)
 #rom key.protocols.threestateonedecoy.key_3s1d import (set_params, key_length, key_length_inv, key_length_sim)
+from key.protocols.list import list_protocols
 from output.outputs import (getOptData, writeDataCSV, write_data, writeMultiData,
                             get_timings, format_time)
 
@@ -32,8 +33,6 @@ arrange_out         = None
 num_min = float_info.epsilon # A very small number
 
 BAR_SIZE = 80
-
-list_protocols = ['aBB84-WCP','3S1D']
 
 ###############################################################################
 

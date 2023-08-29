@@ -2,7 +2,7 @@ import numpy as np
 from sys import float_info
 from scipy.optimize import Bounds
 
-from key.key import list_protocols 
+from key.protocols.list import list_protocols 
 from output.outputs import get_data_header
 
 ##############################################################################

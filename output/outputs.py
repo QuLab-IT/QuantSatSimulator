@@ -1,6 +1,6 @@
 from os.path import join
 from time import (perf_counter, process_time, strftime)
-from key.key import list_protocols 
+from key.protocols.list import list_protocols 
 import numpy as np
 
 __all__ = ['get_data_header','getOptData','writeDataCSV','sort_data',

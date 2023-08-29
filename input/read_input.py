@@ -10,6 +10,7 @@ from sys import exit
 from os.path import isfile
 from .parse_input_string import (str2bool, uncomment_input, 
                                  split_input, input_from_list)
+from key.protocols.list import list_protocols
 
 __all__ = ['read_from_file','get_param_str_list','read_input','read_input_adv',
            'get_input_adv','get_input']
@@ -17,8 +18,6 @@ __all__ = ['read_from_file','get_param_str_list','read_input','read_input_adv',
 ##############################################################################
 
 min_lines = 1
-# List of available security protocols
-list_protocols = ['aBB84-WCP','3S1D']
 
 ##############################################################################
 
